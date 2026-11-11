@@ -183,7 +183,7 @@ class EpicAgent:
             )
             return None
 
-    async def _wait_for_claim_page_login_state(self, timeout_seconds: int = 45) -> str:
+    async def _wait_for_claim_page_login_state(self, timeout_seconds: int = 120) -> str:
         deadline = time.monotonic() + timeout_seconds
         account_probe_at = time.monotonic() + 8
         account_probe_attempted = False
@@ -198,7 +198,29 @@ class EpicAgent:
                 raise EpicManualActionRequiredError(self._mfa_setup_prompt_message(self.page.url))
 
             status = await self._get_login_status(timeout_ms=1500)
-            if status in {"true", "false"}:
+            if status == "true":
+                return status
+            if status == "false":
+                bridged = getattr(self, "_sso_bridge_attempts", 0)
+                if bridged < 2:
+                    self._sso_bridge_attempts = bridged + 1
+                    logger.warning(
+                        "Store nav reports isloggedin=false; bridging account SSO to store ({}/2)",
+                        bridged + 1,
+                    )
+                    with suppress(Exception):
+                        await self.page.goto(URL_LOGIN, wait_until="domcontentloaded", timeout=45000)
+                        await self.page.wait_for_url("**store.epicgames.com/**", timeout=30000)
+                    await self.page.wait_for_timeout(3000)
+                    await self._goto_claim_page()
+                    await self.page.wait_for_timeout(2000)
+                    continue
+                if await self._has_account_session():
+                    logger.warning(
+                        "Store nav still logged-out but account session is valid; proceeding"
+                    )
+                    await self._goto_claim_page()
+                    return "true"
                 return status
 
             if not account_probe_attempted and time.monotonic() >= account_probe_at:
