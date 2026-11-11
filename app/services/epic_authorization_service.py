@@ -670,10 +670,23 @@ class EpicAuthorization:
             if status == "true":
                 return
             if status == "false":
-                raise RuntimeError(
-                    "Epic store still reports isloggedin=false after authentication. "
-                    f"current_url={self.page.url}"
+                # The store nav can briefly render logged-out right after the OAuth
+                # redirect while cookies propagate. Verify via the account API and
+                # reload instead of failing immediately.
+                logger.warning(
+                    "Store nav reports isloggedin=false; verifying session and reloading"
                 )
+                if await self._has_account_session():
+                    await self._goto_claim_page()
+                    status_after = await self._get_login_status(timeout_ms=8000, warn_timeout=False)
+                    if status_after == "true":
+                        return
+                    logger.warning("Account API session is valid; continuing despite store nav marker")
+                    return
+                await self.page.wait_for_timeout(3000)
+                await self._goto_claim_page()
+                account_probe_attempted = True
+                continue
 
             if not account_probe_attempted and time.monotonic() >= account_probe_at:
                 account_probe_attempted = True
